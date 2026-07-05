@@ -1,0 +1,48 @@
+name: Bursa Screener v3
+
+on:
+  schedule:
+    # 10:00 UTC = 6:00 PM MYT same day, Mon-Fri.
+    # Screens TODAY's close (Bursa closes 5pm; Yahoo EOD ready by ~6pm).
+    # GitHub cron can be delayed 5-30 min, so alert lands ~6:00-6:45pm MYT.
+    - cron: "0 10 * * 1-5"
+  workflow_dispatch:   # manual run button - screen on demand anytime
+
+permissions:
+  contents: write
+
+jobs:
+  screen:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run screener
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: python screener.py
+
+
+      - name: Trade-card agent
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          if [ -f results.json ]; then python trade_cards.py; else echo "No results - skipped."; fi
+
+      - name: Commit pick history
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add history.csv
+          git diff --cached --quiet || (git commit -m "Log daily picks" && git push)
