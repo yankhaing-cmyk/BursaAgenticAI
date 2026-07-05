@@ -31,7 +31,6 @@ jobs:
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: python screener.py
 
-
       - name: Trade-card agent
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
@@ -42,7 +41,11 @@ jobs:
 
       - name: Commit pick history
         run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add history.csv
-          git diff --cached --quiet || (git commit -m "Log daily picks" && git push)
+          if [ -f history.csv ]; then
+            git config user.name "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git add history.csv results.json
+            git diff --cached --quiet || (git commit -m "Log daily picks" && git push)
+          else
+            echo "No history.csv yet - skipping commit."
+          fi
