@@ -544,12 +544,12 @@ def main():
     today_myt = dt.datetime.utcnow() + dt.timedelta(hours=8)
     date_str = today_myt.strftime("%Y-%m-%d")
 
-    if today_myt.weekday() >= 5:
-        print(f"{date_str} is a weekend. Exiting.")
-        return
-    if date_str in HOLIDAYS_2026:
-        print(f"{date_str} is a Malaysian public holiday. Exiting.")
-        return
+    #if today_myt.weekday() >= 5:
+    #   print(f"{date_str} is a weekend. Exiting.")
+    #    return
+    #if date_str in HOLIDAYS_2026:
+    #    print(f"{date_str} is a Malaysian public holiday. Exiting.")
+    #    return
 
     regime = market_regime()
     momentum, early, reversal, stats = run_screen(today_myt.date())
