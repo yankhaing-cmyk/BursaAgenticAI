@@ -2,8 +2,9 @@ name: Minervini Watchlist
 
 on:
   schedule:
-    # Saturday 02:00 UTC (10:00 AM MYT/HKT) - weekend Stage 2 review
-    - cron: "0 2 * * 6"
+    - cron: "23 10 * * 1-5"   # keep as backup; Cloudflare is primary
+  repository_dispatch:
+    types: [run-screener]
   workflow_dispatch:
 
 jobs:
