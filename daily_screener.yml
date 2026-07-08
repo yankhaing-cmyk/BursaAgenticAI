@@ -44,5 +44,5 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add history.csv
+          git add history.csv results.json regime_state.json regime_log.csv
           git diff --cached --quiet || (git commit -m "Log daily picks" && git push)
