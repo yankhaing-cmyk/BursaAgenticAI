@@ -241,6 +241,9 @@ def main():
 
     # Top candidates: momentum first, then early (reversals excluded from
     # trade cards by design - watchlist material, not entries)
+    global RR_FLOOR
+    RR_FLOOR = float(res.get("rr_floor", RR_FLOOR))
+    print(f"Playbook {res.get('playbook', '?')} -> R:R floor {RR_FLOOR}:1")
     raw = [dict(r, list="momentum") for r in res.get("momentum", [])[:8]] + \
           [dict(r, list="early") for r in res.get("early", [])[:4]]
     raw = raw[:MAX_CARDS]
