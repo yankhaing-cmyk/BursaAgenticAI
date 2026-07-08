@@ -5,7 +5,7 @@ on:
     # 10:00 UTC = 6:00 PM MYT same day, Mon-Fri.
     # Screens TODAY's close (Bursa closes 5pm; Yahoo EOD ready by ~6pm).
     # GitHub cron can be delayed 5-30 min, so alert lands ~6:00-6:45pm MYT.
-    - cron: "17 08 * * 1-5"
+    - cron: "23 10 * * 1-5"
   workflow_dispatch:   # manual run button - screen on demand anytime
 
 permissions:
