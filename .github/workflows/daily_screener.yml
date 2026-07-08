@@ -5,7 +5,7 @@ on:
     # 10:00 UTC = 6:00 PM MYT same day, Mon-Fri.
     # Screens TODAY's close (Bursa closes 5pm; Yahoo EOD ready by ~6pm).
     # GitHub cron can be delayed 5-30 min, so alert lands ~6:00-6:45pm MYT.
-    - cron: "23 10 * * 1-5"
+    - cron: "0 10 * * 1-5"
   workflow_dispatch:   # manual run button - screen on demand anytime
 
 permissions:
@@ -31,6 +31,7 @@ jobs:
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: python screener.py
 
+
       - name: Trade-card agent
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
@@ -41,11 +42,7 @@ jobs:
 
       - name: Commit pick history
         run: |
-          if [ -f history.csv ]; then
-            git config user.name "github-actions[bot]"
-            git config user.email "github-actions[bot]@users.noreply.github.com"
-            git add history.csv results.json
-            git diff --cached --quiet || (git commit -m "Log daily picks" && git push)
-          else
-            echo "No history.csv yet - skipping commit."
-          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add history.csv results.json regime_state.json regime_log.csv
+          git diff --cached --quiet || (git commit -m "Log daily picks" && git push)
