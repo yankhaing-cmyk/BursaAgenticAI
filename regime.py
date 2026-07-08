@@ -208,11 +208,11 @@ def evaluate(date_str):
     state, switch_note = step_state(dash, state)
     pb = PLAYBOOKS[state["active"]]
 
+    a50 = "\u2191" if dash["above_50"] else "\u2193"
+    a200 = "\u2191" if dash["above_200"] else "\u2193"
     lines = [f"{pb['emoji']} Playbook: <b>{state['active']}</b> "
              f"(day {state['days_in_regime']}) | KLCI {dash['klci']:,.0f} "
-             f"{'\u2191' if dash['above_50'] else '\u2193'}50d "
-             f"{'\u2191' if dash['above_200'] else '\u2193'}200d | "
-             f"vol {dash['vol20']:.0f}%"]
+             f"{a50}50d {a200}200d | vol {dash['vol20']:.0f}%"]
     b = state.get("breadth")
     if b is not None:
         lines[0] += f" | breadth {b:.0f}%"
