@@ -115,7 +115,7 @@ def prep(df: pd.DataFrame, today: dt.date):
 
 # --------------------- Screen 1: established momentum ------------------------
 
-def analyze_momentum(ticker, name, ind):
+def analyze_momentum(ticker, name, ind, P, klci_roc=0.0):
     price = ind["price"]
     # Mandatory: full trend stack incl. long-term filter
     if not (price > float(ind["ema20"].iloc[-1]) > float(ind["sma50"].iloc[-1])):
@@ -123,15 +123,26 @@ def analyze_momentum(ticker, name, ind):
 
     r = float(ind["rsi14"].iloc[-1])
     roc = float(ind["roc20"].iloc[-1])
+
+    # Playbook-level mandatory extras
+    if P.get("mom_need_pos_roc") and roc <= 0:
+        return None
+    if P.get("mom_near_high") and price < P["mom_near_high"] * ind["hi52"]:
+        return None
+    if P.get("mom_rel_strength") is not None \
+            and (roc - klci_roc) < P["mom_rel_strength"]:
+        return None
+
     criteria = {
-        "rsi":     55 <= r <= 80,
+        "rsi":     P["rsi_lo"] <= r <= P["rsi_hi"],
         "macd":    float(ind["macd_line"].iloc[-1]) > float(ind["macd_sig"].iloc[-1]),
-        "volume":  ind["v_sust"] >= 1.3,          # sustained 5d interest
+        "volume":  ind["v_sust"] >= P["vol_sust"],          # sustained 5d interest
         "roc":     roc >= 5.0,
         "hi52":    price >= 0.85 * ind["hi52"],   # within 15% of 52w high
     }
     score = sum(criteria.values())
-    if score < 3:
+    min_score = 5 if P.get("mom_all_criteria") else P["mom_min_score"]
+    if score < min_score:
         return None
 
     return {
@@ -143,7 +154,9 @@ def analyze_momentum(ticker, name, ind):
 
 # --------------------- Screen 2: early uptrend -------------------------------
 
-def analyze_early(ticker, name, ind):
+def analyze_early(ticker, name, ind, P):
+    if not P.get("early_enabled", True):
+        return None
     close, price = ind["close"], ind["price"]
     ema20 = ind["ema20"]
     hist = ind["hist"]
@@ -178,8 +191,10 @@ def analyze_early(ticker, name, ind):
                        >= float(ind["sma50"].iloc[-11]) * 0.99,
         "tight_base":  tight_base,
     }
+    if P.get("early_tight_mandatory") and not tight_base:
+        return None
     n = sum(supports.values())
-    if n < 2:
+    if n < P.get("early_supports", 2):
         return None
 
     trigger = "M+P" if (fresh_macd and fresh_price) else ("M" if fresh_macd else "P")
@@ -197,7 +212,7 @@ def analyze_early(ticker, name, ind):
 
 # --------------------- Screen 3: potential reversal --------------------------
 
-def analyze_reversal(ticker, name, ind):
+def analyze_reversal(ticker, name, ind, P):
     price = ind["price"]
     close, high, low = ind["close"], ind["high"], ind["low"]
     roc = float(ind["roc20"].iloc[-1])
@@ -207,30 +222,50 @@ def analyze_reversal(ticker, name, ind):
             and roc < 0):
         return None
 
-    # Mandatory: strong volume spike
-    if ind["v_day"] < 2.0:
+    # Mandatory: strong volume spike (follow-through mode scans older bars)
+    if P.get("rev_followthrough"):
+        vol, v20 = ind["volume"], float(ind["vol_ma20"].iloc[-1])
+        spike_idx = None
+        for k in (-3, -2):                       # spike must be 2+ bars old
+            if v20 > 0 and float(vol.iloc[k]) / v20 >= P["rev_spike"]:
+                spike_idx = k
+                break
+        if spike_idx is None:
+            return None
+        spike_low = float(ind["low"].iloc[spike_idx])
+        if not all(float(close.iloc[j]) > spike_low
+                   for j in range(spike_idx + 1, 0)):
+            return None                          # failed to hold spike low
+        eval_idx = spike_idx                     # judge direction ON spike day
+    elif ind["v_day"] < P["rev_spike"]:
         return None
+    else:
+        eval_idx = -1
 
-    day_change = float(close.iloc[-1] / close.iloc[-2] - 1) * 100
+    day_change = float(close.iloc[eval_idx] / close.iloc[eval_idx - 1] - 1) * 100
     # Limit-move guard: skip extreme days (limit-down mechanics, corp events)
     if abs(day_change) > 25:
         return None
 
-    day_high, day_low = float(high.iloc[-1]), float(low.iloc[-1])
+    day_high, day_low = float(high.iloc[eval_idx]), float(low.iloc[eval_idx])
+    day_close = float(close.iloc[eval_idx])
     day_range = day_high - day_low
-    close_pos = (price - day_low) / day_range if day_range > 0 else 0.5
+    close_pos = (day_close - day_low) / day_range if day_range > 0 else 0.5
 
     # Mandatory direction: the spike must show BUYING, not just selling
     up_day = day_change > 0
     strong_close = close_pos >= 0.5
-    if not (up_day or strong_close):
+    if P.get("rev_both_mandatory"):
+        if not (up_day and strong_close):
+            return None
+    elif not (up_day or strong_close):
         return None
 
     r_now = float(ind["rsi14"].iloc[-1])
     supports = {
         "up_day": up_day,
         "strong_close": strong_close,
-        "oversold": r_now < 35,          # tightened from 45
+        "oversold": r_now < P.get("rev_rsi", 35),
         "washed_out": roc <= -10.0,
     }
     n = sum(supports.values())
@@ -356,14 +391,17 @@ def market_regime():
 
 BATCH_SIZE = 100
 
-def run_screen(today: dt.date):
+def run_screen(today: dt.date, P=None, klci_roc=0.0):
+    if P is None:
+        import regime as _rg
+        P = _rg.PLAYBOOKS["TRENDING"]
     tickers = pd.read_csv(TICKER_FILE)
     symbols = tickers["ticker"].tolist()
     names = dict(zip(tickers["ticker"], tickers["name"]))
 
     print(f"Screening {len(symbols)} tickers in batches of {BATCH_SIZE}...")
     momentum, early, reversal = [], [], []
-    analyzed, skipped = 0, 0
+    analyzed, skipped, above_ema20 = 0, 0, 0
 
     for start in range(0, len(symbols), BATCH_SIZE):
         batch = symbols[start:start + BATCH_SIZE]
@@ -386,16 +424,18 @@ def run_screen(today: dt.date):
                     skipped += 1
                     continue
                 analyzed += 1
+                if ind["price"] > float(ind["ema20"].iloc[-1]):
+                    above_ema20 += 1
                 name = names.get(sym, sym)
-                res = analyze_momentum(sym, name, ind)
+                res = analyze_momentum(sym, name, ind, P, klci_roc)
                 if res:
                     momentum.append(res)
                     continue
-                res = analyze_early(sym, name, ind)
+                res = analyze_early(sym, name, ind, P)
                 if res:
                     early.append(res)
                     continue
-                res = analyze_reversal(sym, name, ind)
+                res = analyze_reversal(sym, name, ind, P)
                 if res:
                     reversal.append(res)
             except Exception:
@@ -404,12 +444,14 @@ def run_screen(today: dt.date):
     for lst in (momentum, early, reversal):
         lst.sort(key=lambda x: (-x["score"], -x["avg_value"]))
 
-    stats = {"total": len(symbols), "analyzed": analyzed, "skipped": skipped}
+    breadth = (above_ema20 / analyzed * 100) if analyzed else None
+    stats = {"total": len(symbols), "analyzed": analyzed, "skipped": skipped,
+             "breadth": breadth}
     print(f"Quality gates: {analyzed} analyzed, {skipped} skipped.")
     print(f"{len(momentum)} momentum, {len(early)} early, "
           f"{len(reversal)} reversal.")
-    return (momentum[:TOP_N], early[:EARLY_TOP_N],
-            reversal[:REVERSAL_TOP_N], stats)
+    cm, ce, cr = P.get("caps", (TOP_N, EARLY_TOP_N, REVERSAL_TOP_N))
+    return momentum[:cm], early[:ce], reversal[:cr], stats
 
 # ----------------------------- Pick history / streaks ------------------------
 
@@ -544,15 +586,20 @@ def main():
     today_myt = dt.datetime.utcnow() + dt.timedelta(hours=8)
     date_str = today_myt.strftime("%Y-%m-%d")
 
-    #if today_myt.weekday() >= 5:
-    #   print(f"{date_str} is a weekend. Exiting.")
-    #    return
-    #if date_str in HOLIDAYS_2026:
-    #    print(f"{date_str} is a Malaysian public holiday. Exiting.")
-    #    return
+    if today_myt.weekday() >= 5:
+        print(f"{date_str} is a weekend. Exiting.")
+        return
+    if date_str in HOLIDAYS_2026:
+        print(f"{date_str} is a Malaysian public holiday. Exiting.")
+        return
 
-    regime = market_regime()
-    momentum, early, reversal, stats = run_screen(today_myt.date())
+    import regime as rg
+    playbook, regime_lines, rstate, klci_roc = rg.evaluate(date_str)
+    regime = "\n".join(regime_lines)
+    momentum, early, reversal, stats = run_screen(today_myt.date(),
+                                                  playbook, klci_roc)
+    rg.finalize(rstate, stats.get("breadth"),
+                [r["ticker"] for r in momentum])
     tv = tv_snapshot()
     matched = tv_annotate(momentum, tv)
     extras = tv_extras(tv, matched)
@@ -570,6 +617,8 @@ def main():
     import json
     with open("results.json", "w") as f:
         json.dump({"date": date_str, "regime": regime,
+                   "playbook": rstate["active"],
+                   "rr_floor": playbook["rr_floor"],
                    "momentum": momentum, "early": early,
                    "reversal": reversal}, f)
     print("results.json written for trade-card agent.")
