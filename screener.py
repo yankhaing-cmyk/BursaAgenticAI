@@ -34,6 +34,7 @@ LOOKBACK_DAYS = 300
 TOP_N = 50               # established momentum
 EARLY_TOP_N = 25         # early uptrend
 REVERSAL_TOP_N = 25      # potential reversals
+ACC_TOP_N = 20           # accumulation watch (GCB-type base awakening)
 
 MIN_PRICE = 0.20         # RM
 MIN_AVG_VALUE = 1_000_000  # RM, 20-day average daily traded value
@@ -391,6 +392,99 @@ def market_regime():
 
 BATCH_SIZE = 100
 
+
+def snap_row(sym, name, ind):
+    """Every ingredient the browser app needs to re-screen with custom
+    thresholds. Booleans are NOT baked in - only raw measurements."""
+    f = float
+    close, low, high = ind["close"], ind["low"], ind["high"]
+    rng20 = close.tail(20)
+    d = f(close.iloc[-1] / close.iloc[-2] - 1) * 100
+    dh, dl = f(high.iloc[-1]), f(low.iloc[-1])
+    rngd = dh - dl
+    return {
+        "t": sym.replace(TICKER_SUFFIX, ""), "n": name,
+        "p": round(ind["price"], 4),
+        "e20": round(f(ind["ema20"].iloc[-1]), 4),
+        "s50": round(f(ind["sma50"].iloc[-1]), 4),
+        "s50p": round(f(ind["sma50"].iloc[-11]), 4),
+        "rsi": round(f(ind["rsi14"].iloc[-1]), 2),
+        "rsip": round(f(ind["rsi14"].iloc[-6]), 2),
+        "md": round(f(ind["macd_line"].iloc[-1]) - f(ind["macd_sig"].iloc[-1]), 6),
+        "mdp": round(f(ind["macd_line"].iloc[-4]) - f(ind["macd_sig"].iloc[-4]), 6),
+        "h1": round(f(ind["hist"].iloc[-1]), 6),
+        "h2": round(f(ind["hist"].iloc[-2]), 6),
+        "h3": round(f(ind["hist"].iloc[-3]), 6),
+        "vd": round(ind["v_day"], 3),
+        "vs": round(ind["v_sust"], 3),
+        "roc": round(f(ind["roc20"].iloc[-1]), 2),
+        "hi52": round(ind["hi52"], 4),
+        "av": int(ind["avg_value"]),
+        "wb": bool((close.iloc[-6:-1] <= ind["ema20"].iloc[-6:-1]).any()),
+        "tb": round(f(rng20.max()) / f(rng20.min()) - 1, 4),
+        "dchg": round(d, 2),
+        "cpos": round((ind["price"] - dl) / rngd, 3) if rngd > 0 else 0.5,
+    }
+
+
+def analyze_accumulation(ticker, name, ind):
+    """Phase-2 'base awakening': volume wakes up while price still sleeps.
+    Regime-independent watch list - these are months-early candidates,
+    not entries. Modeled on the GCB-type stage transition."""
+    close, low, volume = ind["close"], ind["low"], ind["volume"]
+    price = ind["price"]
+    if len(close) < 150:                     # need base + volume history
+        return None
+
+    # 1) A real base: last ~6 months range <= 30%, and price well off
+    #    the high of the available window (beaten down / forgotten)
+    base = close.tail(126)
+    lo_b, hi_b = float(base.min()), float(base.max())
+    if lo_b <= 0 or (hi_b / lo_b - 1) > 0.30:
+        return None
+    hi_all = float(close.max())
+    if price > 0.80 * hi_all:                # within 20% of high = not forgotten
+        return None
+
+    # 2) Accumulation divergence: 20d volume >= 1.5x 120d volume,
+    #    while 60d price change stays quiet (within +/-8%)
+    v20 = float(volume.rolling(20).mean().iloc[-1])
+    v120 = float(volume.rolling(120).mean().iloc[-1])
+    if v120 <= 0:
+        return None
+    vol_ratio = v20 / v120
+    if vol_ratio < 1.5:
+        return None
+    roc60 = float(close.iloc[-1] / close.iloc[-61] - 1) * 100
+    if abs(roc60) > 8.0:
+        return None
+
+    # 3) Demand bias: up-day volume dominates down-day volume (21d),
+    #    and swing lows are ascending (20d min > prior 20d min)
+    chg = close.diff().tail(21)
+    v21 = volume.tail(21)
+    up_vol = float(v21[chg > 0].sum())
+    dn_vol = float(v21[chg < 0].sum())
+    updown = (up_vol / dn_vol) if dn_vol > 0 else 2.0
+    lows_rising = float(low.tail(20).min()) > float(low.iloc[-40:-20].min())
+
+    supports = {"U": updown >= 1.3, "L": lows_rising}
+    n = sum(supports.values())
+    if n < 1:                                 # need at least one demand tell
+        return None
+
+    flags = "BQ" + "".join(k for k, v in supports.items() if v)
+    return {
+        "ticker": ticker.replace(".KL", ""), "name": name,
+        "price": price, "rsi": float(ind["rsi14"].iloc[-1]),
+        "vol_ratio": vol_ratio,               # 20d vs 120d volume
+        "roc20": float(ind["roc20"].iloc[-1]),
+        "flags": flags,
+        "score": round(vol_ratio * (1 + 0.2 * n), 3),
+        "avg_value": ind["avg_value"],
+    }
+
+
 def run_screen(today: dt.date, P=None, klci_roc=0.0):
     if P is None:
         import regime as _rg
@@ -400,8 +494,9 @@ def run_screen(today: dt.date, P=None, klci_roc=0.0):
     names = dict(zip(tickers["ticker"], tickers["name"]))
 
     print(f"Screening {len(symbols)} tickers in batches of {BATCH_SIZE}...")
-    momentum, early, reversal = [], [], []
+    momentum, early, reversal, accum = [], [], [], []
     analyzed, skipped, above_ema20 = 0, 0, 0
+    snapshot = []
 
     for start in range(0, len(symbols), BATCH_SIZE):
         batch = symbols[start:start + BATCH_SIZE]
@@ -427,6 +522,7 @@ def run_screen(today: dt.date, P=None, klci_roc=0.0):
                 if ind["price"] > float(ind["ema20"].iloc[-1]):
                     above_ema20 += 1
                 name = names.get(sym, sym)
+                snapshot.append(snap_row(sym, name, ind))
                 res = analyze_momentum(sym, name, ind, P, klci_roc)
                 if res:
                     momentum.append(res)
@@ -438,6 +534,10 @@ def run_screen(today: dt.date, P=None, klci_roc=0.0):
                 res = analyze_reversal(sym, name, ind, P)
                 if res:
                     reversal.append(res)
+                    continue
+                res = analyze_accumulation(sym, name, ind)
+                if res:
+                    accum.append(res)
             except Exception:
                 skipped += 1
 
@@ -450,8 +550,10 @@ def run_screen(today: dt.date, P=None, klci_roc=0.0):
     print(f"Quality gates: {analyzed} analyzed, {skipped} skipped.")
     print(f"{len(momentum)} momentum, {len(early)} early, "
           f"{len(reversal)} reversal.")
+    stats["snapshot"] = snapshot
+    accum.sort(key=lambda x: (-x["score"], -x["avg_value"]))
     cm, ce, cr = P.get("caps", (TOP_N, EARLY_TOP_N, REVERSAL_TOP_N))
-    return momentum[:cm], early[:ce], reversal[:cr], stats
+    return momentum[:cm], early[:ce], reversal[:cr], accum[:ACC_TOP_N], stats
 
 # ----------------------------- Pick history / streaks ------------------------
 
@@ -507,7 +609,7 @@ def fmt(r, i, streaks=None):
         f"[{r['flags']}]"
     )
 
-def build_lines(momentum, early, reversal, ref_date, regime, stats,
+def build_lines(momentum, early, reversal, accum, ref_date, regime, stats,
                 tv_extras_list=None, tv_ok=False, streaks=None):
     lines = [
         f"\U0001F4CA <b>Bursa Screen v3</b>\n\U0001F5D3 Close of {ref_date}\n{regime}\n"
@@ -523,6 +625,11 @@ def build_lines(momentum, early, reversal, ref_date, regime, stats,
 
     lines.append("\n🔄 <b>— Potential reversals (high risk) —</b>")
     lines += [fmt(r, i, (streaks or {}).get("reversal")) for i, r in enumerate(reversal, 1)] or ["None today."]
+
+    lines.append("\n\U0001F9F2 <b>— Accumulation KLSE Stock List —</b>")
+    lines.append("<i>Base awakening: volume rising while price still flat. "
+                 "Watch stage - months-early, NOT entries.</i>")
+    lines += [fmt(r, i, (streaks or {}).get("accumulation")) for i, r in enumerate(accum, 1)] or ["None today."]
 
     if tv_ok:
         lines.append("\n\U0001F4E1 <b>\u2014 TradingView cross-check \u2014</b>")
@@ -596,8 +703,8 @@ def main():
     import regime as rg
     playbook, regime_lines, rstate, klci_roc = rg.evaluate(date_str)
     regime = "\n".join(regime_lines)
-    momentum, early, reversal, stats = run_screen(today_myt.date(),
-                                                  playbook, klci_roc)
+    momentum, early, reversal, accum, stats = run_screen(today_myt.date(),
+                                                         playbook, klci_roc)
     rg.finalize(rstate, stats.get("breadth"),
                 [r["ticker"] for r in momentum])
     tv = tv_snapshot()
@@ -606,12 +713,13 @@ def main():
 
     hist = load_history()
     streaks = {ln: streaks_for(hist, ln, date_str)
-               for ln in ("momentum", "early", "reversal")}
-    send_telegram(build_lines(momentum, early, reversal,
+               for ln in ("momentum", "early", "reversal", "accumulation")}
+    send_telegram(build_lines(momentum, early, reversal, accum,
                               today_myt.strftime("%d %b %Y"), regime, stats,
                               extras, tv is not None, streaks))
     append_history(hist, {"momentum": momentum, "early": early,
-                          "reversal": reversal}, date_str)
+                          "reversal": reversal,
+                          "accumulation": accum}, date_str)
 
     # Hand off to the trade-card agent (runs as the next workflow step)
     import json
@@ -620,8 +728,16 @@ def main():
                    "playbook": rstate["active"],
                    "rr_floor": playbook["rr_floor"],
                    "momentum": momentum, "early": early,
-                   "reversal": reversal}, f)
+                   "reversal": reversal, "accumulation": accum}, f)
     print("results.json written for trade-card agent.")
+
+    with open("snapshot.json", "w") as f:
+        json.dump({"date": date_str, "playbook": rstate["active"],
+                   "klci_roc20": round(klci_roc, 2),
+                   "breadth": stats.get("breadth"),
+                   "stocks": stats.get("snapshot", [])}, f,
+                  separators=(",", ":"))
+    print(f"snapshot.json written ({len(stats.get('snapshot', []))} stocks).")
 
 if __name__ == "__main__":
     try:
