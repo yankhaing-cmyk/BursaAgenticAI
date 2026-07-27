@@ -9,3 +9,4 @@ date,active,days,klci,above50,above200,vol20,breadth,churn,switched
 2026-07-21,CHOPPY,18,1731.4,True,True,10.2,55.6,0.53,False
 2026-07-22,CHOPPY,20,1711.4,True,True,9.2,58.3,0.21,False
 2026-07-24,TRENDING,2,1701.0,True,True,8.7,58.9,0.0,False
+2026-07-28,TRENDING,3,1701.0,True,True,8.7,51.9,0.24,False
