@@ -22,3 +22,4 @@ date,active,days,klci,above50,above200,vol20,breadth,churn,switched
 2026-08-12,TRENDING,4,1741.6,True,True,7.4,66.5,0.16,False
 2026-08-13,TRENDING,5,1734.7,True,True,7.4,72.6,0.26,False
 2026-08-14,TRENDING,6,1727.4,True,True,7.3,65.3,0.16,False
+2026-08-17,TRENDING,7,1725.9,True,True,7.0,67.4,0.16,False
